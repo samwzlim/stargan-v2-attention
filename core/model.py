@@ -310,65 +310,90 @@ def build_model(args):
     return nets, nets_ema
 
 
+# Define the Scaled Dot-Product Attention class
 class ScaledDotProductAttention(nn.Module):
     def __init__(self, dim: int):
         super(ScaledDotProductAttention, self).__init__()
+        # Calculate the scaling factor (square root of the input dimension) to stabilize the dot product
         self.sqrt_dim = np.sqrt(dim)
-        
+
     def forward(self, query: Tensor, key: Tensor, value: Tensor, mask: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
+        # Compute attention scores by matrix multiplication of query and transposed key, followed by scaling
         score = torch.bmm(query, key.transpose(1, 2)) / self.sqrt_dim
-        
+
+        # Apply mask (if provided) to ignore certain positions by setting them to negative infinity
         if mask is not None:
             score.masked_fill_(mask.view(score.size()), -float('Inf'))
-            
+
+        # Apply softmax to convert scores to probabilities, emphasizing the most relevant parts
         attn = F.softmax(score, -1)
+
+        # Compute the context vector by multiplying the attention weights with the value vector
         context = torch.bmm(attn, value)
+
+        # Return the context vector and attention weights
         return context, attn
-        
 
 
+# Define the Attention class (multi-head attention mechanism)
 class Attention(nn.Module):
-    def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0.):
+    def __init__(self, dim, heads=8, dim_head=64, dropout=0.):
         super().__init__()
-        inner_dim = dim_head *  heads
+        # Calculate the total inner dimension based on the number of heads and head dimension
+        inner_dim = dim_head * heads
+
+        # Determine whether output projection is needed (if single head, skip projection)
         project_out = not (heads == 1 and dim_head == dim)
 
-        self.heads = heads
-        self.scale = dim_head ** -0.5
+        self.heads = heads  # Number of attention heads
+        self.scale = dim_head ** -0.5  # Scaling factor for the dot product
 
-        self.attend = nn.Softmax(dim = -1)
+        # Define softmax for attention and dropout for regularization
+        self.attend = nn.Softmax(dim=-1)
         self.dropout = nn.Dropout(dropout)
 
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
+        # Linear layer to compute query, key, and value vectors in one step
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
 
+        # Define output projection layer (if needed)
         self.to_out = nn.Sequential(
             nn.Linear(inner_dim, dim),
             nn.Dropout(dropout)
         ) if project_out else nn.Identity()
 
     def forward(self, x):
-        qkv = self.to_qkv(x).chunk(3, dim = -1)
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = self.heads), qkv)
+        # Compute query, key, and value vectors and split them into multiple heads
+        qkv = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.heads), qkv)
 
+        # Calculate dot product of query and key, scaled by the head dimension
         dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
 
+        # Apply softmax to get attention weights and then dropout for regularization
         attn = self.attend(dots)
         attn = self.dropout(attn)
 
+        # Compute the output by multiplying attention weights with value vectors
         out = torch.matmul(attn, v)
+
+        # Rearrange the output back to its original shape and apply the output projection
         out = rearrange(out, 'b h n d -> b n (h d)')
         return self.to_out(out)
-        
 
+
+# Define the Feed-Forward Network class
 class FeedForward(nn.Module):
-    def __init__(self, dim, hidden_dim, dropout = 0.):
+    def __init__(self, dim, hidden_dim, dropout=0.):
         super().__init__()
+        # Define a sequence of layers for the feed-forward network
         self.net = nn.Sequential(
-            nn.Linear(dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, dim),
-            nn.Dropout(dropout)
+            nn.Linear(dim, hidden_dim),  # First linear transformation
+            nn.GELU(),  # Apply GELU activation function for non-linearity
+            nn.Dropout(dropout),  # Apply dropout for regularization
+            nn.Linear(hidden_dim, dim),  # Second linear transformation
+            nn.Dropout(dropout)  # Final dropout for regularization
         )
+
     def forward(self, x):
+        # Pass the input through the feed-forward network
         return self.net(x)
